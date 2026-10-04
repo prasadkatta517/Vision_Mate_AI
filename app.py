@@ -1,7 +1,11 @@
 import os
+import asyncio
+
 import streamlit as st
-import google.genai as genai
+from google import genai
 from google.genai import types
+from dotenv import load_dotenv
+from telegram import Bot
 
 from prompts import (
     ANALYZE_IMAGE_PROMPT,
@@ -13,7 +17,9 @@ from prompts import (
 )
 
 
-# Page Configuration
+# ============================================================
+# PAGE CONFIGURATION
+# ============================================================
 
 st.set_page_config(
     page_title="VisionMate AI",
@@ -21,474 +27,665 @@ st.set_page_config(
     layout="centered",
 )
 
-# API Key
 
-API_KEY = None
+# ============================================================
+# LOAD ENVIRONMENT VARIABLES
+# ============================================================
 
-# Streamlit Cloud Secrets
-try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-except Exception:
-    pass
+load_dotenv()
 
-# Local .env fallback
-if not API_KEY:
+
+# ============================================================
+# LOAD SECRETS
+# ============================================================
+
+def get_secret(name):
+    """
+    Read secrets from Streamlit Cloud when deployed.
+    Read .env when running locally.
+    """
+
     try:
-        from dotenv import load_dotenv
-
-        load_dotenv()
-        API_KEY = os.getenv("GEMINI_API_KEY")
+        return st.secrets.get(
+            name,
+            os.getenv(name, "")
+        )
     except Exception:
-        pass
+        return os.getenv(name, "")
 
-if not API_KEY:
-    st.error(
-        "GEMINI_API_KEY was not found. "
-        "Please add it to Streamlit Secrets or your local .env file."
-    )
-    st.stop()
 
-client = genai.Client(api_key=API_KEY)
+GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
+TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
+
+
+# ============================================================
+# GEMINI CONFIGURATION
+# ============================================================
 
 MODEL_NAME = "gemini-3.8-flash"
 
 
-# Session State
+@st.cache_resource
+def get_gemini_client():
 
-if "image_bytes" not in st.session_state:
-    st.session_state.image_bytes = None
+    if not GEMINI_API_KEY:
+        raise ValueError(
+            "GEMINI_API_KEY is not configured."
+        )
 
-if "image_type" not in st.session_state:
-    st.session_state.image_type = None
+    return genai.Client(
+        api_key=GEMINI_API_KEY
+    )
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
 # ============================================================
-# Custom CSS
+# TELEGRAM
 # ============================================================
+
+def send_telegram(message):
+
+    if not TELEGRAM_BOT_TOKEN:
+        raise ValueError(
+            "TELEGRAM_BOT_TOKEN is not configured."
+        )
+
+    if not TELEGRAM_CHAT_ID:
+        raise ValueError(
+            "TELEGRAM_CHAT_ID is not configured."
+        )
+
+    async def send_message():
+
+        bot = Bot(
+            token=TELEGRAM_BOT_TOKEN
+        )
+
+        async with bot:
+
+            await bot.send_message(
+                chat_id=str(TELEGRAM_CHAT_ID),
+                text=message
+            )
+
+    asyncio.run(send_message())
+
+
+# ============================================================
+# IMAGE ANALYSIS
+# ============================================================
+
+def analyze_image(
+    image_bytes,
+    mime_type,
+    prompt
+):
+
+    client = get_gemini_client()
+
+    image_part = types.Part.from_bytes(
+        data=image_bytes,
+        mime_type=mime_type
+    )
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=[
+            prompt,
+            image_part
+        ]
+    )
+
+    return response.text
+
+
+# ============================================================
+# FOLLOW-UP QUESTION
+# ============================================================
+
+def ask_followup(
+    image_bytes,
+    mime_type,
+    question
+):
+
+    client = get_gemini_client()
+
+    image_part = types.Part.from_bytes(
+        data=image_bytes,
+        mime_type=mime_type
+    )
+
+    prompt = f"""
+{CHAT_SYSTEM_PROMPT}
+
+User question:
+
+{question}
+"""
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=[
+            prompt,
+            image_part
+        ]
+    )
+
+    return response.text
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.title("👁️ VisionMate AI")
 
 st.markdown(
     """
-    <style>
-    .main-title {
-        text-align: center;
-        font-size: 42px;
-        font-weight: 700;
-        margin-bottom: 5px;
-    }
+### See the world differently
 
-    .subtitle {
-        text-align: center;
-        font-size: 18px;
-        margin-bottom: 25px;
-    }
-
-    .tool-card {
-        padding: 18px;
-        border-radius: 12px;
-        border: 1px solid rgba(128,128,128,0.25);
-        margin-bottom: 15px;
-    }
-
-    .tool-title {
-        font-size: 20px;
-        font-weight: 600;
-    }
-
-    .tool-description {
-        font-size: 14px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ============================================================
-# Header
-# ============================================================
-
-st.markdown(
-    '<div class="main-title">👁️ VisionMate AI</div>',
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    '<div class="subtitle">Your Real-World Visual Assistant</div>',
-    unsafe_allow_html=True,
-)
-
-# ============================================================
-# Hero Section
-# ============================================================
-
-st.info(
-    """
-### 👁️ See the world differently
-
-Upload an image and let VisionMate AI understand it.
+Upload an image and let **VisionMate AI** understand it.
 
 **Read text • Understand scenes • Study • Ask questions**
 """
 )
 
+st.info(
+    """
+VisionMate AI is an AI-powered visual assistant that helps
+users understand images, read text, explain study material,
+and get accessible descriptions of visual scenes.
+"""
+)
+
+
 # ============================================================
-# Sidebar
+# SIDEBAR
 # ============================================================
 
 with st.sidebar:
+
     st.header("👁️ VisionMate AI")
 
     st.write(
         """
-        VisionMate AI is an AI-powered visual assistant
-        that helps users understand images, read text,
-        explain study material, and ask questions about images.
-        """
+VisionMate AI helps users understand visual information
+using artificial intelligence.
+
+### Features
+
+📷 Analyze images
+
+📖 Read text
+
+🧠 Explain study material
+
+♿ Accessibility descriptions
+
+💬 Ask follow-up questions
+
+📨 Send summaries to Telegram
+"""
     )
 
     st.divider()
 
-    st.subheader("Available Tools")
+    st.subheader("About")
 
-    st.write("🔍 Analyze Image")
-    st.write("📖 Read Text")
-    st.write("🧠 Explain This Text")
-    st.write("♿ Accessibility Mode")
-    st.write("💬 Ask VisionMate")
+    st.write(
+        """
+VisionMate AI was built as a hands-on AI project using
+Python, Streamlit, Google Gemini, and Telegram.
+"""
+    )
+
 
 # ============================================================
-# Image Upload
+# IMAGE UPLOAD
 # ============================================================
 
 st.subheader("📷 Upload an Image")
 
 uploaded_file = st.file_uploader(
     "Choose an image",
-    type=["jpg", "jpeg", "png"],
+    type=[
+        "jpg",
+        "jpeg",
+        "png",
+        "webp"
+    ]
 )
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "ai_response" not in st.session_state:
+
+    st.session_state.ai_response = ""
+
+
+if "image_bytes" not in st.session_state:
+
+    st.session_state.image_bytes = None
+
+
+if "mime_type" not in st.session_state:
+
+    st.session_state.mime_type = None
+
+
+# ============================================================
+# IMAGE PROCESSING
+# ============================================================
 
 if uploaded_file is not None:
 
-    st.session_state.image_bytes = uploaded_file.getvalue()
-    st.session_state.image_type = uploaded_file.type
+    image_bytes = uploaded_file.getvalue()
+
+    mime_type = uploaded_file.type
+
+    st.session_state.image_bytes = image_bytes
+
+    st.session_state.mime_type = mime_type
+
+
+    # --------------------------------------------------------
+    # DISPLAY IMAGE
+    # --------------------------------------------------------
 
     st.image(
-        st.session_state.image_bytes,
+        image_bytes,
         caption="Uploaded Image",
-        use_container_width=True,
+        use_container_width=True
     )
+
+
+    st.divider()
+
+    st.subheader("🔍 Choose an Action")
+
+
+    # --------------------------------------------------------
+    # ACTION BUTTONS
+    # --------------------------------------------------------
 
     col1, col2 = st.columns(2)
 
+
     with col1:
-        if st.button("🗑️ Remove Image", use_container_width=True):
-            st.session_state.image_bytes = None
-            st.session_state.image_type = None
-            st.session_state.messages = []
-            st.rerun()
 
-    with col2:
-        if st.button("🔄 Reset Chat", use_container_width=True):
-            st.session_state.messages = []
-            st.rerun()
-
-# ============================================================
-# Tool Cards
-# ============================================================
-
-st.subheader("🛠️ VisionMate Tools")
-
-col1, col2 = st.columns(2)
-
-with col1:
-
-    st.markdown(
-        """
-        <div class="tool-card">
-        <div class="tool-title">🔍 Analyze Image</div>
-        <div class="tool-description">
-        Understand objects, people, surroundings and
-        important visual details.
-        </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="tool-card">
-        <div class="tool-title">🧠 Explain This Text</div>
-        <div class="tool-description">
-        Turn study material into simple explanations,
-        key points and exam questions.
-        </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with col2:
-
-    st.markdown(
-        """
-        <div class="tool-card">
-        <div class="tool-title">📖 Read Text</div>
-        <div class="tool-description">
-        Extract readable text from images.
-        </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="tool-card">
-        <div class="tool-title">♿ Accessibility Mode</div>
-        <div class="tool-description">
-        Get a detailed description of visual scenes.
-        </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-# ============================================================
-# Image Analysis Functions
-# ============================================================
-
-def generate_image_response(prompt):
-    image_part = types.Part.from_bytes(
-        data=st.session_state.image_bytes,
-        mime_type=st.session_state.image_type,
-    )
-
-    return client.models.generate_content(
-        model=MODEL_NAME,
-        contents=[image_part, prompt],
-    )
-
-
-# ============================================================
-# Action Buttons
-# ============================================================
-
-st.subheader("⚡ Choose an Action")
-
-col1, col2 = st.columns(2)
-
-with col1:
-
-    analyze_button = st.button(
-        "🔍 Analyze Image",
-        use_container_width=True,
-    )
-
-    read_button = st.button(
-        "📖 Read Text",
-        use_container_width=True,
-    )
-
-with col2:
-
-    explain_button = st.button(
-        "🧠 Explain This Text",
-        use_container_width=True,
-    )
-
-    accessibility_button = st.button(
-        "♿ Accessibility Mode",
-        use_container_width=True,
-    )
-
-# ============================================================
-# Button Processing
-# ============================================================
-
-if any(
-    [
-        analyze_button,
-        read_button,
-        explain_button,
-        accessibility_button,
-    ]
-):
-
-    if st.session_state.image_bytes is None:
-
-        st.warning("Please upload an image first.")
-
-    else:
-
-        try:
-
-            if analyze_button:
-
-                with st.spinner("Analyzing image..."):
-
-                    response = generate_image_response(
-                        ANALYZE_IMAGE_PROMPT
-                    )
-
-                st.subheader("🔍 Image Analysis")
-                st.write(response.text)
-
-            elif read_button:
-
-                with st.spinner("Reading text..."):
-
-                    response = generate_image_response(
-                        READ_TEXT_PROMPT
-                    )
-
-                st.subheader("📖 Extracted Text")
-                st.write(response.text)
-
-            elif explain_button:
-
-                with st.spinner("Explaining the content..."):
-
-                    response = generate_image_response(
-                        EXPLAIN_TEXT_PROMPT
-                    )
-
-                st.subheader("🧠 Explanation")
-                st.write(response.text)
-
-            elif accessibility_button:
-
-                with st.spinner("Creating accessibility description..."):
-
-                    response = generate_image_response(
-                        ACCESSIBILITY_PROMPT
-                    )
-
-                st.subheader("♿ Accessibility Description")
-                st.write(response.text)
-
-        except Exception as e:
-
-            error_message = str(e)
-
-            if "429" in error_message:
-
-                st.warning(
-                    "⚠️ Gemini API request limit reached. "
-                    "Please wait for the quota to reset and try again later."
-                )
-
-            else:
-
-                st.error(
-                    "Something went wrong while processing the image."
-                )
-
-# ============================================================
-# Follow-up Chat
-# ============================================================
-
-st.divider()
-
-st.subheader("💬 Ask VisionMate")
-
-if st.session_state.image_bytes is None:
-
-    st.info("Upload an image first to ask questions about it.")
-
-else:
-
-    for message in st.session_state.messages:
-
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-
-    user_question = st.chat_input(
-        "Ask a question about the image..."
-    )
-
-    if user_question:
-
-        st.session_state.messages.append(
-            {
-                "role": "user",
-                "content": user_question,
-            }
+        analyze_button = st.button(
+            "🔍 Analyze Image",
+            use_container_width=True
         )
 
-        with st.chat_message("user"):
-            st.write(user_question)
+        read_button = st.button(
+            "📖 Read Text",
+            use_container_width=True
+        )
+
+
+    with col2:
+
+        explain_button = st.button(
+            "🧠 Explain This Text",
+            use_container_width=True
+        )
+
+        accessibility_button = st.button(
+            "♿ Accessibility Mode",
+            use_container_width=True
+        )
+
+
+    # ========================================================
+    # ANALYZE IMAGE
+    # ========================================================
+
+    if analyze_button:
+
+        with st.spinner(
+            "🔍 Analyzing the image..."
+        ):
+
+            try:
+
+                result = analyze_image(
+                    image_bytes,
+                    mime_type,
+                    ANALYZE_IMAGE_PROMPT
+                )
+
+                st.session_state.ai_response = result
+
+            except Exception as e:
+
+                error = str(e)
+
+                if (
+                    "429" in error
+                    or "RESOURCE_EXHAUSTED" in error
+                ):
+
+                    st.error(
+                        """
+⚠️ Gemini API rate limit reached.
+
+Please wait a little and try again.
+"""
+                    )
+
+                else:
+
+                    st.error(
+                        f"❌ Error:\n\n{error}"
+                    )
+
+
+    # ========================================================
+    # READ TEXT
+    # ========================================================
+
+    if read_button:
+
+        with st.spinner(
+            "📖 Reading text..."
+        ):
+
+            try:
+
+                result = analyze_image(
+                    image_bytes,
+                    mime_type,
+                    READ_TEXT_PROMPT
+                )
+
+                st.session_state.ai_response = result
+
+            except Exception as e:
+
+                error = str(e)
+
+                if (
+                    "429" in error
+                    or "RESOURCE_EXHAUSTED" in error
+                ):
+
+                    st.error(
+                        """
+⚠️ Gemini API rate limit reached.
+
+Please wait a little and try again.
+"""
+                    )
+
+                else:
+
+                    st.error(
+                        f"❌ Error:\n\n{error}"
+                    )
+
+
+    # ========================================================
+    # EXPLAIN TEXT
+    # ========================================================
+
+    if explain_button:
+
+        with st.spinner(
+            "🧠 Explaining the content..."
+        ):
+
+            try:
+
+                result = analyze_image(
+                    image_bytes,
+                    mime_type,
+                    EXPLAIN_TEXT_PROMPT
+                )
+
+                st.session_state.ai_response = result
+
+            except Exception as e:
+
+                error = str(e)
+
+                if (
+                    "429" in error
+                    or "RESOURCE_EXHAUSTED" in error
+                ):
+
+                    st.error(
+                        """
+⚠️ Gemini API rate limit reached.
+
+Please wait a little and try again.
+"""
+                    )
+
+                else:
+
+                    st.error(
+                        f"❌ Error:\n\n{error}"
+                    )
+
+
+    # ========================================================
+    # ACCESSIBILITY MODE
+    # ========================================================
+
+    if accessibility_button:
+
+        with st.spinner(
+            "♿ Creating accessibility description..."
+        ):
+
+            try:
+
+                result = analyze_image(
+                    image_bytes,
+                    mime_type,
+                    ACCESSIBILITY_PROMPT
+                )
+
+                st.session_state.ai_response = result
+
+            except Exception as e:
+
+                error = str(e)
+
+                if (
+                    "429" in error
+                    or "RESOURCE_EXHAUSTED" in error
+                ):
+
+                    st.error(
+                        """
+⚠️ Gemini API rate limit reached.
+
+Please wait a little and try again.
+"""
+                    )
+
+                else:
+
+                    st.error(
+                        f"❌ Error:\n\n{error}"
+                    )
+
+
+# ============================================================
+# AI RESPONSE
+# ============================================================
+
+if st.session_state.ai_response:
+
+    st.divider()
+
+    st.subheader(
+        "🤖 VisionMate AI Response"
+    )
+
+    st.markdown(
+        st.session_state.ai_response
+    )
+
+
+    # ========================================================
+    # TELEGRAM ACTION
+    # ========================================================
+
+    st.divider()
+
+    st.subheader("📨 Send Summary")
+
+    st.write(
+        """
+Send the AI-generated response directly
+to your VisionMate AI Telegram bot.
+"""
+    )
+
+
+    telegram_button = st.button(
+        "📨 Send Summary to Telegram",
+        use_container_width=True
+    )
+
+
+    if telegram_button:
+
+        telegram_message = (
+            "👁️ VisionMate AI Summary\n\n"
+            + st.session_state.ai_response
+        )
 
         try:
 
-            with st.chat_message("assistant"):
+            with st.spinner(
+                "📨 Sending to Telegram..."
+            ):
 
-                with st.spinner("Thinking..."):
+                send_telegram(
+                    telegram_message
+                )
 
-                    image_part = types.Part.from_bytes(
-                        data=st.session_state.image_bytes,
-                        mime_type=st.session_state.image_type,
-                    )
-
-                    contents = [
-                        CHAT_SYSTEM_PROMPT,
-                        image_part,
-                    ]
-
-                    for message in st.session_state.messages:
-                        contents.append(
-                            f'{message["role"]}: {message["content"]}'
-                        )
-
-                    response = client.models.generate_content(
-                        model=MODEL_NAME,
-                        contents=contents,
-                    )
-
-                    answer = response.text
-
-                    st.write(answer)
-
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": answer,
-                }
+            st.success(
+                "✅ Summary successfully sent to Telegram!"
             )
 
         except Exception as e:
 
-            error_message = str(e)
+            st.error(
+                f"❌ Telegram error:\n\n{str(e)}"
+            )
 
-            if "429" in error_message:
-
-                st.warning(
-                    "⚠️ Gemini API request limit reached. "
-                    "Please wait for the quota to reset."
-                )
-
-            else:
-
-                st.error(
-                    "Something went wrong while answering your question."
-                )
 
 # ============================================================
-# About
+# FOLLOW-UP CHAT
+# ============================================================
+
+if st.session_state.image_bytes is not None:
+
+    st.divider()
+
+    st.subheader(
+        "💬 Ask VisionMate"
+    )
+
+    st.write(
+        "Ask a follow-up question about the uploaded image."
+    )
+
+
+    question = st.text_input(
+        "Your question",
+        placeholder=(
+            "Example: What is the main idea of this image?"
+        )
+    )
+
+
+    ask_button = st.button(
+        "💬 Ask VisionMate",
+        use_container_width=True
+    )
+
+
+    if ask_button:
+
+        if not question.strip():
+
+            st.warning(
+                "Please enter a question first."
+            )
+
+        else:
+
+            with st.spinner(
+                "💬 Thinking..."
+            ):
+
+                try:
+
+                    answer = ask_followup(
+                        st.session_state.image_bytes,
+                        st.session_state.mime_type,
+                        question
+                    )
+
+                    st.subheader(
+                        "🤖 Answer"
+                    )
+
+                    st.markdown(
+                        answer
+                    )
+
+                except Exception as e:
+
+                    error = str(e)
+
+                    if (
+                        "429" in error
+                        or "RESOURCE_EXHAUSTED" in error
+                    ):
+
+                        st.error(
+                            """
+⚠️ Gemini API rate limit reached.
+
+Please wait a little and try again.
+"""
+                        )
+
+                    else:
+
+                        st.error(
+                            f"❌ Error:\n\n{error}"
+                        )
+
+
+# ============================================================
+# WELCOME MESSAGE
+# ============================================================
+
+if uploaded_file is None:
+
+    st.markdown(
+        WELCOME_MESSAGE
+    )
+
+
+# ============================================================
+# FOOTER
 # ============================================================
 
 st.divider()
 
-st.subheader("ℹ️ About VisionMate AI")
-
-st.write(
-    """
-    VisionMate AI is an AI-powered visual assistant built
-    using Python, Streamlit and Google Gemini.
-
-    It can analyze images, extract text, explain study material,
-    provide accessibility descriptions and answer questions
-    about uploaded images.
-    """
+st.caption(
+    "👁️ VisionMate AI • AI-powered visual assistant"
 )
